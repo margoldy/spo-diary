@@ -1,0 +1,21 @@
+# окружение и временные файлы
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.local/
+.coverage
+server/app/covers/private/
+
+# локальные настройки
+.env
+.env.*
+!.env.example
+.idea/
+
+# зависимости и сборка клиента
+node_modules/
+dist/

@@ -1,0 +1,17 @@
+.git
+.idea
+.local
+**/.venv
+**/venv
+**/__pycache__
+**/*.py[cod]
+**/.env
+**/.env.*
+.ruff_cache
+.pytest_cache
+.mypy_cache
+.coverage
+app/covers/private
+tests
+README.md
+dev.py
