@@ -11,6 +11,7 @@ CATALOG = ROOT / "data/works.json"
 ORDER_HASH = "64e445a5c500a1530bcdc9cb8808ed2a034faead90e002558a4afb497c5cd78d"
 TAG_HASH = "0323612f7a89236984b0eb28397a767e01d14e7d0744c8acab5f9f9603160313"
 ANNOTATION_HASH = "08af5b1af89cbfe26afe2405683cd089fe12415f55761a8d25db218b52fddb7d"
+EXPANDED_HASH = "a2292f414149ccfd2cb5152676f6ab770195f4ac091ed4a846e2d29cf5d29a9c"
 
 # эталонные сценарии
 # индексы произведений и тегов в каталоге
@@ -170,7 +171,7 @@ CHECK_PROFILES = [
 def load_catalog(path):
     data = json.loads(path.read_text(encoding="utf-8"))
     fingerprint = hashlib.sha256("\n".join(w["id"] for w in data["works"]).encode()).hexdigest()
-    tag_fingerprint = hashlib.sha256("\n".join(t["id"] for t in data["tags"]).encode()).hexdigest()
+    tag_fingerprint = hashlib.sha256("\n".join(t["id"] for t in data["tags"][:132]).encode()).hexdigest()
     if fingerprint != ORDER_HASH or tag_fingerprint != TAG_HASH:
         raise ValueError("Порядок произведений или тегов не соответствует тестовым сценариям")
     return data
@@ -249,7 +250,16 @@ def rank(profile, data, *, baseline=False):
             ratings.append(
                 dict(tag_id=tag, value=value, genres=genre_map[work["id"]], work_id=work["id"], library_id=entry_id)
             )
-    scorer = ContentScores(tag_map, main_map, genre_map)
+    history = [
+        dict(row, type_id=work["type"], signals={})
+        for entry_id, (work, _) in enumerate(profile.get("ratings", []))
+        for row in [next((r for r in ratings if r["library_id"] == entry_id), None)]
+        if row is not None
+    ]
+    scorer = ContentScores(
+        tag_map, main_map, genre_map,
+        types={w["id"]: w["type"] for w in works}, history=None if baseline else history,
+    )
     if baseline:
         # старая формула на той же разметке без поправок на редкость
         from decimal import Decimal
@@ -457,9 +467,16 @@ def quality_results(data, *, baseline=False):
 
 
 def verify_quality(data):
-    payload = [{k: w[k] for k in ("id", "tag_ids", "main_tag_ids", "genres")} for w in data["works"]]
+    original_tags = {tag["id"] for tag in data["tags"][:132]}
+    payload = [
+        dict(id=w["id"], genres=w["genres"], **{
+            key: [tag for tag in w[key] if tag in original_tags] for key in ("tag_ids", "main_tag_ids")
+        }) for w in data["works"]
+    ]
     digest = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
     assert digest == ANNOTATION_HASH, "Разметка не соответствует контрольной сумме"
+    expanded = [{k: w[k] for k in ("id", "tag_ids", "main_tag_ids", "genres")} for w in data["works"]]
+    assert hashlib.sha256(json.dumps(expanded, ensure_ascii=False, sort_keys=True).encode()).hexdigest() == EXPANDED_HASH
     for work in data["works"]:
         assert set(work["main_tag_ids"]) <= set(work["tag_ids"])
     results = quality_results(data)
@@ -474,6 +491,12 @@ def verify_quality(data):
 
 def report(data):
     current, before = quality_results(data), quality_results(data, baseline=True)
+    original_ids = {tag["id"] for tag in data["tags"][:132]}
+    original = dict(data, tags=data["tags"][:132], works=[
+        dict(w, **{key: [tag for tag in w[key] if tag in original_ids] for key in ("tag_ids", "main_tag_ids")})
+        for w in data["works"]
+    ])
+    previous_annotations = quality_results(original)
     lines = [
         "# Проверка рекомендаций", "",
         f"Каталог: {len(data['works'])} произведения. Проверка: {len(current)} сценария и {len(CHECK_PROFILES)} контрольных запроса.",
@@ -487,7 +510,7 @@ def report(data):
         lines.append(f"| {profile['name']} | {explicit:.3f} | {right} |")
     lines += [
         "",
-        f"Среднее: {sum(current.values()) / len(current):.3f}; у предыдущей формулы на тех же данных: {sum(before.values()) / len(before):.3f}.",
+        f"Среднее: {sum(current.values()) / len(current):.3f}; у базовой формулы без редкости и приоритета типов на тех же данных: {sum(before.values()) / len(before):.3f}.",
         "",
         "Ограничения: межжанровые совпадения тегов, неопределённость предпочтений по одной оценке, несколько адаптаций в выдаче. Результаты относятся к тестовым сценариям; пользовательское исследование не проводилось.",
         "",
@@ -495,6 +518,18 @@ def report(data):
         "app/.venv/Scripts/python.exe tests/evaluate_recommendations.py --verify-db --output ../../RECOMMENDATIONS_CHECK.md",
         "```", "",
         "`--verify-db` использует только `spo_diary_test`. Платная модель не вызывается.", "",
+        "## Расширение разметки", "",
+        "132 → 144 тега; добавлено 26 связей с произведениями. Прежние связи и их основные/фоновые роли сохранены.", "",
+        f"На прежней разметке та же формула даёт среднее {sum(previous_annotations.values()) / len(previous_annotations):.3f}. Снижения на фиксированных эталонах:", "",
+        "| Сценарий | До расширения | После |", "|---|---:|---:|",
+    ]
+    lines.extend(
+        f"| {name} | {previous_annotations[name]:.3f} | {score:.3f} |"
+        for name, score in current.items() if score < previous_annotations[name] - 1e-9
+    )
+    lines += [
+        "", "Новые основные признаки меняют нормировку карточек и сходство по общей оценке. Эталоны не пересматривались под новую выдачу; общее улучшение качества по этим данным не подтверждено.", "",
+        "Дополнительные API-проверки: оценка и явный тег одновременно; книга с отметкой уюта; 1984 с оценкой 4; приоритет типа без ослабления отрицательных отметок; личная карточка с жанрами; замена оценки; удаление записи; изменение типа при импорте.", "",
     ]
     return "\n".join(lines)
 

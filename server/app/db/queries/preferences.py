@@ -3,8 +3,8 @@ from decimal import Decimal
 from sqlalchemy import delete, insert, select
 from sqlalchemy.orm import Session
 
-from app.core.recommendations import ContentScores, catalog_maps
-from app.db.models import Library, LibraryTag, Recommendation, UserTag, WorkGenre, WorkTag
+from app.core.recommendations import ContentScores, catalog_maps, history_value
+from app.db.models import Library, LibraryTag, Recommendation, UserTag, Work, WorkGenre, WorkTag
 
 
 class PreferencesQueries:
@@ -52,18 +52,42 @@ class PreferencesQueries:
         if work_ids is not None:
             condition &= Recommendation.work_id.in_(work_ids)
         self.db.execute(delete(Recommendation).where(condition))
+        scorer = self.scorer(user_id)
+        profile, ratings = self.context(user_id, scorer.genres)
+        rows = []
+        for work_id in scorer.types if work_ids is None else work_ids:
+            score = scorer.score(work_id, profile, ratings)
+            if score or scorer.tags[work_id].intersection(profile):
+                rows.append({"user_id": user_id, "work_id": work_id, "score": score})
+        if rows:
+            self.db.execute(insert(Recommendation), rows)
+
+    def scorer(self, user_id):
         tags, main, genres = catalog_maps(
             self.db.execute(select(WorkTag.work_id, WorkTag.tag_id, WorkTag.is_main)),
             self.db.execute(select(WorkGenre.work_id, WorkGenre.genre_id)),
         )
-        profile, ratings = self.context(user_id, genres)
-        scorer = ContentScores(tags, main, genres)
-        rows = []
-        for work_id in tags.keys() if work_ids is None else work_ids:
-            if tags[work_id].intersection(profile):
-                rows.append({"user_id": user_id, "work_id": work_id, "score": scorer.score(work_id, profile, ratings)})
-        if rows:
-            self.db.execute(insert(Recommendation), rows)
+        types = dict(self.db.execute(select(Work.id, Work.type_id)).all())
+        return ContentScores(tags, main, genres, types=types, history=self.history(user_id))
+
+    def history(self, user_id):
+        result = []
+        entries = self.db.scalars(select(Library).where(Library.user_id == user_id).order_by(Library.id))
+        for entry in entries:
+            if entry.analysis not in (None, "done"):
+                continue
+            work = entry.work if entry.work_id else entry.private_work
+            signals = {row.tag_id: row.value for row in entry.signals if row.source != "rating"}
+            value = history_value(entry.rating, signals)
+            if not value and not signals:
+                continue
+            result.append({
+                "library_id": entry.id, "work_id": work.id, "type_id": work.type_id,
+                "genres": {genre.id for genre in work.genres}, "signals": signals,
+                "value": value,
+                "source": "rating" if entry.rating is not None else "context",
+            })
+        return result
 
     def context(self, user_id, genres=None):
         if genres is None:
@@ -91,7 +115,7 @@ class PreferencesQueries:
                 .order_by(Library.id, LibraryTag.tag_id)
             ).all()
         )
-        return self.weights(user_id), ratings
+        return self.weights(user_id), ratings, self.history(user_id)
 
     def rescore_if_changed(self, user_id, previous):
         self.db.flush()

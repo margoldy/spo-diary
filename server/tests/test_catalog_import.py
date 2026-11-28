@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import subprocess
@@ -109,8 +110,14 @@ with TestClient(app, headers={'Origin':'http://127.0.0.1:8000'}) as client:
             self.assertFalse((clone / "data/covers").exists())
             with psycopg.connect(url.set(drivername="postgresql").render_as_string(hide_password=False)) as db:
                 self.assertEqual(db.execute("SELECT count(*) FROM works").fetchone()[0], 202)
-                self.assertEqual(db.execute("SELECT count(*) FROM work_tags").fetchone()[0], 1228)
-                self.assertEqual(db.execute("SELECT count(*) FROM work_tags WHERE is_main").fetchone()[0], 594)
+                data = json.loads((ROOT / "data/works.json").read_text("utf-8"))
+                expected_tags = {
+                    (w["id"], tag, tag in w["main_tag_ids"]) for w in data["works"] for tag in w["tag_ids"]
+                }
+                actual_tags = {
+                    (str(work), str(tag), main) for work, tag, main in db.execute("SELECT work_id,tag_id,is_main FROM work_tags")
+                }
+                self.assertEqual(actual_tags, expected_tags)
                 self.assertEqual(db.execute("SELECT count(*) FROM work_groups").fetchone()[0], 34)
                 self.assertEqual(db.execute("SELECT count(*) FROM library").fetchone()[0], 1)
                 self.assertEqual(db.execute("SELECT count(*) FROM users").fetchone()[0], 1)

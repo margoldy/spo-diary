@@ -21,7 +21,7 @@ async def check_request(request: Request):
     multiple = {"types", "genre_ids", "statuses", "tag_ids", "exclude_tag_ids"}
     if any(len(request.query_params.getlist(key)) > 1 for key in request.query_params if key not in multiple):
         raise ApiError(422, "VALIDATION_ERROR", "Параметр передан несколько раз")
-    no_body = request.method in ("GET", "DELETE") or path.endswith(("/logout", "/retry")) or "/hidden/" in path
+    no_body = request.method in ("GET", "DELETE") or path.endswith(("/logout", "/refresh", "/retry")) or "/hidden/" in path
     if no_body and await request.body():
         raise ApiError(422, "VALIDATION_ERROR", "Тело запроса не требуется")
     if request.method == "PUT" and path.endswith("/cover"):

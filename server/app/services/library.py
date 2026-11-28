@@ -1,9 +1,9 @@
-from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.errors import ApiError
+from app.core.recommendations import RATING_VALUES
 from app.db.models import Library, Tag, WorkTag
 from app.db.queries.library import LibraryQueries
 from app.db.queries.preferences import PreferencesQueries
@@ -11,7 +11,6 @@ from app.db.queries.works import WorksQueries
 from app.services.presenters import analysis_response, entry_response
 
 REVIEW_FIELDS = ("liked", "disliked", "comment")
-RATING_VALUES = {1: Decimal("-.3"), 2: Decimal("-.2"), 4: Decimal(".2"), 5: Decimal(".3")}
 
 
 class LibraryService:

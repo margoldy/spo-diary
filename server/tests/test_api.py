@@ -206,7 +206,7 @@ class ApiTests(ApiFixture):
     def test_catalog_filters_adaptations_and_references(self):
         self.assertEqual(len(self.request("GET", "/types")["items"]), 14)
         self.assertEqual(len(self.request("GET", "/genres")["items"]), 26)
-        self.assertEqual(self.request("GET", "/tags?limit=2")["total"], 132)
+        self.assertEqual(self.request("GET", "/tags?limit=2")["total"], 144)
         detail = self.request("GET", f"/works/{self.works[0]}")
         self.assertEqual([x["id"] for x in detail["adaptations"]], [str(self.works[1])])
         self.assertEqual(self.request("GET", "/works?q=%25_")["total"], 1)
@@ -647,7 +647,14 @@ class ApiTests(ApiFixture):
                 with patch("app.core.mail.get_settings", return_value=settings):
                     issued = self.request("POST", "/auth/request-code", json={"email": "mail@example.com"})
                 self.assertEqual(messages[0]["To"], "mail@example.com")
-                code = re.search(r"\b[0-9]{6}\b", messages[0].get_content()).group()
+                self.assertEqual(messages[0].get_content_type(), "multipart/alternative")
+                self.assertEqual(messages[0]["From"].addresses[0].display_name, "Моя библиотека")
+                plain = messages[0].get_body(preferencelist=("plain",)).get_content()
+                html = messages[0].get_body(preferencelist=("html",)).get_content()
+                code = re.search(r"\b[0-9]{6}\b", plain).group()
+                self.assertIn(code, html)
+                self.assertIn("Ваш код входа", html)
+                self.assertNotIn("$code", html)
                 self.request("POST", "/auth/verify-code", json={"code_id": issued["code_id"], "code": code})
             finally:
                 server.shutdown()

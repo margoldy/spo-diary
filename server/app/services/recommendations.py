@@ -23,7 +23,10 @@ class RecommendationsService:
         if entry is None:
             return {"text": "По вашим оценкам и отметкам произведений.", "source_work": None}
         work = entry.work if entry.work_id else entry.private_work
-        verb = "Предположение по вашей оценке" if source == "rating" else "Вам понравилось"
+        verb = {
+            "rating": "По содержанию оценённого произведения",
+            "context": "По содержанию произведения с положительными отметками",
+        }.get(source, "Вам понравилось")
         return {
             "text": f"{verb} «{work.title}»: {tag.name}.",
             "source_work": {"id": work.id, "scope": "catalog" if entry.work_id else "private", "title": work.title},

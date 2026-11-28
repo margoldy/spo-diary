@@ -8,7 +8,7 @@ import httpx
 from pydantic import SecretStr
 
 from app.core.config import get_settings
-from app.core.model import Observations, ReviewModel
+from app.core.model import MAX_SIGNALS, Observations, ReviewModel, general_reaction
 
 
 class ModelTests(unittest.TestCase):
@@ -71,6 +71,82 @@ class ModelTests(unittest.TestCase):
                 self.assertEqual(rows[0]["value"], expected)
                 self.assertEqual(rows[0]["quote"], texts["liked"])
 
+    def test_atmosphere_requires_a_specific_description(self):
+        tags = [dict(id=str(UUID(int=1)), name="Уютная атмосфера"), dict(id=str(UUID(int=2)), name="Мрачная атмосфера")]
+        for text in (
+            "Атмосферная книга",
+            "Ну там в общем норм люди что-то ходят атмосфера есть",
+            "1984 очень атмосферная",
+        ):
+            for tag in (1, 2):
+                texts = {"liked": text}
+                _, ordered, evidence = ReviewModel.prepare(texts, tags)
+                content = json.dumps({"observations": [dict(tag=tag, evidence=1, sentiment="positive")]})
+                self.assertEqual(ReviewModel.normalize(content, texts, ordered, evidence), [])
+        for text, tag in (
+            ("Ламповая домашняя обстановка", 1),
+            ("Умиротворяющая атмосфера", 1),
+            ("Гнетущая безысходность", 2),
+            ("Cozy вайб очень зашёл", 1),
+            ("Дарк атмосфера не моё", 2),
+            ("Dark атмосфера", 2),
+        ):
+            texts = {"liked": text}
+            _, ordered, evidence = ReviewModel.prepare(texts, tags)
+            content = json.dumps({"observations": [dict(tag=tag, evidence=1, sentiment="positive")]})
+            self.assertEqual(len(ReviewModel.normalize(content, texts, ordered, evidence)), 1)
+
+    def test_slang_reactions_do_not_invent_features_or_call_provider(self):
+        samples = [
+            "Душно, герой NPC, местами кринж.",
+            "Стекло, я ору.",
+            "Автор cooked.",
+            "POV: я дочитала.",
+            "Имба, база, peak fiction.",
+            "ГГ сигма, +1000 ауры, rizz.",
+            "Лютый вайб.",
+            "Скибиди делулу, я в тильте 💀",
+            "Герой ред флаг",
+            "💀😭",
+        ]
+        for text in samples:
+            with self.subTest(text=text), patch("app.core.model.httpx.Client") as client:
+                self.assertTrue(general_reaction(text))
+                self.assertEqual(ReviewModel().analyze({"comment": text}, self.tags), [])
+                client.assert_not_called()
+
+    def test_concrete_features_are_not_filtered_as_slang(self):
+        for text in (
+            "Умный гг имба",
+            "Плот твисты база",
+            "Слоуберн между героями не зашёл",
+            "Персонажи из врагов стали возлюбленными, обожаю",
+            "Финал стекло, все погибли, не моё",
+            "Медленно развиваются события, душно",
+            "Кринжовый любовный треугольник",
+            "Cozy атмосфера",
+            "Мрачная атмосфера",
+            "Скибиди, но умный герой понравился",
+        ):
+            with self.subTest(text=text):
+                self.assertFalse(general_reaction(text))
+
+    def test_slang_reaction_keeps_the_feature_and_original_quote(self):
+        for separator in (" ", "   ", "\n", "\r\n"):
+            texts = {"comment": "Умный герой." + separator + "Это имба!"}
+            messages, tags, evidence = ReviewModel.prepare(texts, self.tags)
+            self.assertEqual(evidence, [{"field": "comment", "text": texts["comment"]}])
+            self.assertIn("Это имба!", messages[1]["content"])
+            content = json.dumps({"observations": [dict(tag=1, evidence=1, sentiment="positive")]})
+            self.assertEqual(ReviewModel.normalize(content, texts, tags, evidence)[0]["quote"], texts["comment"])
+
+    def test_general_reaction_alone_cannot_confirm_a_tag(self):
+        texts = {"liked": "Умный герой", "disliked": "Кринж"}
+        _, tags, evidence = ReviewModel.prepare(texts, self.tags)
+        self.assertEqual(len(evidence), 2)
+        content = json.dumps({"observations": [dict(tag=1, evidence=2, sentiment="negative")]})
+        self.assertEqual(ReviewModel.normalize(content, texts, tags, evidence), [])
+
     def test_invalid_observations_are_not_applied(self):
         texts = {"comment": "Текст."}
         _, tags, evidence = ReviewModel.prepare(texts, self.tags)
@@ -95,7 +171,7 @@ class ModelTests(unittest.TestCase):
             "```json\n{}\n```",
             '{"observations":',
             '{"signals":[]}',
-            json.dumps({"observations": [valid] * 133}),
+            json.dumps({"observations": [valid] * (MAX_SIGNALS + 1)}),
         ]:
             with self.subTest(content=content[:40]), self.assertRaises(ValueError):
                 ReviewModel.normalize(content, texts, tags, evidence)
