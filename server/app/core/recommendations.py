@@ -3,6 +3,13 @@ from collections import defaultdict
 from decimal import Decimal
 
 BACKGROUND_WEIGHT = Decimal(".25")
+RATING_VALUES = {1: Decimal("-.3"), 2: Decimal("-.2"), 4: Decimal(".2"), 5: Decimal(".3")}
+
+
+def history_value(rating, signals):
+    if rating is not None:
+        return RATING_VALUES.get(rating, Decimal(0))
+    return Decimal(".15") if sum(signals.values()) > 0 else Decimal(0)
 
 
 def explicit_weights(profile, ratings):
@@ -28,8 +35,10 @@ def catalog_maps(tag_rows, genre_rows):
 
 
 class ContentScores:
-    def __init__(self, tags, main, genres):
+    def __init__(self, tags, main, genres, *, types=None, history=None):
         self.tags, self.main, self.genres = tags, main, genres
+        self.types = types or {}
+        self.history = history
         frequency = defaultdict(int)
         for values in tags.values():
             for tag in values:
@@ -45,20 +54,60 @@ class ContentScores:
             genre: 1 + math.log((genre_count + 1) / (count + 1)) for genre, count in genre_frequency.items()
         }
 
+    def genre_similarity(self, left, right):
+        if not left or not right:
+            return 1.0
+        return sum(self.genre_idf.get(g, 1) ** 2 for g in left & right) / math.sqrt(
+            sum(self.genre_idf.get(g, 1) ** 2 for g in left)
+            * sum(self.genre_idf.get(g, 1) ** 2 for g in right)
+        )
+
     def similarity(self, source, target):
         left, right = self.main[source], self.main[target]
         if not left or not right:
             return 0.0
-        source_genres, target_genres = self.genres[source], self.genres[target]
-        genre_score = 1.0
-        if source_genres and target_genres:
-            genre_score = sum(self.genre_idf.get(g, 1) ** 2 for g in source_genres & target_genres) / math.sqrt(
-                sum(self.genre_idf.get(g, 1) ** 2 for g in source_genres)
-                * sum(self.genre_idf.get(g, 1) ** 2 for g in target_genres)
-            )
+        genre_score = self.genre_similarity(self.genres[source], self.genres[target])
         numerator = sum(self.idf[tag] ** 2 for tag in left & right)
         denominator = math.sqrt(sum(self.idf[tag] ** 2 for tag in left) * sum(self.idf[tag] ** 2 for tag in right))
         return genre_score * numerator / denominator
+
+    def type_factor(self, work_id):
+        positive = [row for row in self.history or [] if row["value"] > 0]
+        total = sum((row["value"] for row in positive), Decimal(0))
+        same = sum(
+            (row["value"] for row in positive if row["type_id"] == self.types.get(work_id)), Decimal(0)
+        )
+        return 1 + Decimal(".25") * same / (Decimal(".3") + total)
+
+    def tag_context(self, tag, work_id):
+        sources = [row for row in self.history or [] if row["signals"].get(tag, 0) > 0]
+        if not sources:
+            return Decimal(1)
+        match = sum(self.genre_similarity(row["genres"], self.genres[work_id]) for row in sources) / len(sources)
+        return Decimal(str(.5 + .5 * match))
+
+    def source_contributions(self, row, work_id, weights):
+        source = row["work_id"]
+        source_tags, target_tags = self.main[source], self.main[work_id]
+        genres = self.genre_similarity(row["genres"], self.genres[work_id])
+        if not source_tags:
+            # без разметки используем только известные жанры
+            shared = row["genres"] & self.genres[work_id]
+            total = sum(self.genre_idf.get(g, 1) ** 2 for g in shared)
+            return {
+                genre: row["value"] * Decimal(str(.25 * genres * self.genre_idf.get(genre, 1) ** 2 / total))
+                for genre in shared
+            }
+        if not self.main[source].intersection(self.main[work_id]) or not genres:
+            return {}
+        left = {tag: self.idf[tag] for tag in source_tags}
+        right = {tag: self.idf[tag] for tag in target_tags}
+        norm = math.sqrt(sum(v * v for v in left.values()) * sum(v * v for v in right.values()))
+        return {
+            tag: row["value"] * Decimal(str(genres * left[tag] * right[tag] / norm))
+            for tag in source_tags & target_tags
+            if not weights.get(tag) and tag not in row["signals"]
+        }
 
     def contributions(self, work_id, profile, ratings):
         weights = explicit_weights(profile, ratings)
@@ -80,22 +129,22 @@ class ContentScores:
             for tag, weight in weights.items()
             if tag in self.tags[work_id]
         }
-        sources = {row["library_id"]: row for row in ratings}
-        strength = sum((abs(Decimal(row["value"])) for row in sources.values()), Decimal(0))
-        for row in sources.values():
-            source = row["work_id"]
-            similarity = self.similarity(source, work_id)
-            if not similarity:
-                continue
-            shared = self.main[source] & main
-            shared_norm = sum(self.idf[tag] ** 2 for tag in shared)
-            value = Decimal(row["value"]) * Decimal(str(similarity)) / (2 + strength)
-            for tag in shared:
-                # оценка не учитывается при явном отношении к тегу
-                if weights.get(tag):
-                    continue
-                result[tag] = result.get(tag, Decimal(0)) + value * Decimal(str(self.idf[tag] ** 2 / shared_norm))
-        return result
+        result = {
+            tag: value * self.tag_context(tag, work_id) if value > 0 else value
+            for tag, value in result.items()
+        }
+        history = self.history
+        if history is None:
+            history = [
+                dict(row, genres=self.genres[row["work_id"]], signals={})
+                for row in {row["library_id"]: row for row in ratings}.values()
+            ]
+        strength = sum((abs(row["value"]) for row in history), Decimal(0))
+        for row in history:
+            for tag, value in self.source_contributions(row, work_id, weights).items():
+                result[tag] = result.get(tag, Decimal(0)) + value / (2 + strength)
+        factor = self.type_factor(work_id)
+        return {tag: value * factor if value > 0 else value for tag, value in result.items()}
 
     def score(self, work_id, profile, ratings):
         return sum(self.contributions(work_id, profile, ratings).values(), Decimal(0))

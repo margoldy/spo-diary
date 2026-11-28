@@ -53,6 +53,8 @@ class WorksService:
 
     def update_private(self, user_id, work_id, values):
         self.library.lock_user(user_id)
+        preferences = LibraryService(self.db).preferences
+        before = preferences.state(user_id)
         work = self.queries.get_private(work_id, user_id)
         if "type" in values:
             values["type_id"] = TYPE_IDS[values.pop("type")]
@@ -60,6 +62,7 @@ class WorksService:
             self.queries.replace_genres(work, values.pop("genre_ids"))
         for key, value in values.items():
             setattr(work, key, value)
+        preferences.rescore_if_changed(user_id, before)
         self.db.commit()
         return self.get_private(user_id, work_id)
 

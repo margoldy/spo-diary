@@ -5,7 +5,80 @@ import os
 import unittest
 from pathlib import Path
 
-from app.core.model import Observations, ReviewModel
+from app.core.model import Observations, ReviewModel, general_reaction
+
+SLANG_CASES = [
+    {
+        "name": "general_slang",
+        "texts": {
+            "liked": "Имба, база, peak fiction. ГГ сигма, +1000 ауры, rizz. Лютый вайб.",
+            "comment": "Скибиди делулу, я в тильте 💀",
+        },
+        "expected": {},
+    },
+    {
+        "name": "specific_moods",
+        "texts": {"liked": "Cozy вайб очень зашёл.", "disliked": "Dark атмосфера в конце вообще не моё."},
+        "expected": {"Уютная атмосфера": 1, "Мрачная атмосфера": -1},
+    },
+    {
+        "name": "romance_and_twists",
+        "texts": {
+            "liked": "Обожаю slow burn между героями, из врагов в возлюбленные. Плот твисты имба.",
+            "disliked": "Любовный треугольник кринж, скипала эти сцены.",
+        },
+        "expected": {
+            "Постепенное развитие романтических отношений": 1,
+            "От врагов к возлюбленным": 1,
+            "Неожиданные сюжетные повороты": 1,
+            "Любовный треугольник": -1,
+        },
+    },
+    {
+        "name": "ambiguous_slang",
+        "texts": {
+            "disliked": "Душно, герой NPC, местами кринж.",
+            "comment": "Стекло, я ору. Автор cooked. POV: я дочитала.",
+        },
+        "expected": {},
+    },
+    {
+        "name": "ending_and_pace",
+        "texts": {
+            "disliked": "Это стекло в финале: все герои погибли, терпеть такое не могу. События еле двигаются, "
+            "этот темп не вывезла."
+        },
+        "expected": {"Трагический финал": -1, "Медленное развитие событий": -1},
+    },
+    {
+        "name": "opposite_headings",
+        "texts": {
+            "liked": "Слоуберн между парой НЕ зашёл.",
+            "disliked": "Любовный треугольник тут не кринж, наоборот, мне понравился.",
+        },
+        "expected": {"Постепенное развитие романтических отношений": -1, "Любовный треугольник": 1},
+    },
+    {
+        "name": "overpowered_hero",
+        "texts": {
+            "liked": "ГГ одним ударом выносит любого противника, никто ему не ровня, вот это имба, обожаю такое."
+        },
+        "expected": {"Герой с выдающимися способностями": 1},
+    },
+    {
+        "name": "presentation_not_story",
+        "texts": {"liked": "Опенинг разнос, OST имба, артстайл база.", "disliked": "Фансервис кринж."},
+        "expected": {},
+    },
+    {
+        "name": "explicit_subject_and_mixed",
+        "texts": {
+            "comment": "Главный герой умный. Это имба! В начале cozy атмосфера понравилась, "
+            "но дальше та же уютная атмосфера начала раздражать.",
+        },
+        "expected": {"Умный главный герой": 1, "Уютная атмосфера": 0},
+    },
+]
 
 
 @unittest.skipUnless(os.environ.get("RUN_LIVE_MODEL_TESTS") == "1", "Нужен явный запуск платных проверок")
@@ -31,7 +104,8 @@ class LiveModelTests(unittest.TestCase):
 
     def analyze(self, liked=None, disliked=None, comment=None):
         texts = {"liked": liked, "disliked": disliked, "comment": comment}
-        messages, _, _ = self.model.prepare(texts, self.tags)
+        messages, ordered, evidence = self.model.prepare(texts, self.tags)
+        local_only = not ordered or not evidence or all(general_reaction(row["text"]) for row in evidence)
         # оценка стоимости перед платным запросом
         review_bytes = len(messages[-1]["content"].encode("utf-8"))
         if self.base_tokens is None:
@@ -40,6 +114,8 @@ class LiveModelTests(unittest.TestCase):
         else:
             bound = self.base_tokens + review_bytes + 128
         reserve = bound * 0.2 / 1000 + self.model.output_limit(texts) * 0.3 / 1000
+        if local_only:
+            reserve = 0.0
         if type(self).spent + reserve > self.budget:
             self.skipTest("Недостаточный бюджет теста")
         if self.model.model_uri and "/qwen3.6-35b-a3b/" not in self.model.model_uri:
@@ -62,8 +138,22 @@ class LiveModelTests(unittest.TestCase):
             self.measurements.append({"case": self._testMethodName, "usage": usage, "estimated_rub": round(cost, 4)})
         return {self.names[str(row["tag_id"])]: row["value"] for row in rows}
 
+    def test_slang_examples(self):
+        for case in SLANG_CASES:
+            with self.subTest(case=case["name"]):
+                self.assertEqual(self.analyze(**case["texts"]), case["expected"])
+
     def test_report_review_has_no_specific_features(self):
         self.assertEqual(self.analyze(liked="Всё круто классно", disliked="-", comment="Второй сезон где"), {})
+
+    def test_atmospheric_does_not_mean_cozy_or_dark(self):
+        self.assertEqual(self.analyze(liked="1984 очень атмосферная книга"), {})
+
+    def test_specific_atmospheres_keep_their_meaning(self):
+        self.assertEqual(
+            self.analyze(liked="Очень уютная атмосфера", disliked="Мрачная атмосфера в последней части"),
+            {"Уютная атмосфера": 1, "Мрачная атмосфера": -1},
+        )
 
     def test_absence_is_not_dislike(self):
         self.assertEqual(

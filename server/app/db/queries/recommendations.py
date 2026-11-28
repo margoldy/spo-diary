@@ -1,8 +1,8 @@
 from sqlalchemy import case, exists, func, select
 from sqlalchemy.orm import Session
 
-from app.core.recommendations import ContentScores, catalog_maps, explicit_weights
-from app.db.models import Library, LibraryTag, Recommendation, Tag, UserTag, Work, WorkGenre, WorkTag
+from app.core.recommendations import explicit_weights
+from app.db.models import Genre, Library, LibraryTag, Recommendation, Tag, UserTag, Work, WorkGenre, WorkTag
 from app.db.queries.preferences import PreferencesQueries
 from app.db.queries.works import WorksQueries
 
@@ -11,6 +11,7 @@ class RecommendationsQueries:
     def __init__(self, db: Session):
         self.db = db
         self.works = WorksQueries(db)
+        self._reason_context = None
 
     def page(self, user_id, filters):
         base = self.works.available(self.works.filtered(filters), user_id)
@@ -20,8 +21,11 @@ class RecommendationsQueries:
         has_personal = self.db.scalar(select(exists(personal.with_only_columns(Work.id))))
         has_preferences = self.db.scalar(select(exists().where(UserTag.user_id == user_id, UserTag.weight > 0)))
         if not has_preferences:
-            profile, ratings = PreferencesQueries(self.db).context(user_id)
-            has_preferences = any(value > 0 for value in explicit_weights(profile, ratings).values())
+            preferences = PreferencesQueries(self.db)
+            profile, ratings = preferences.context(user_id)
+            has_preferences = any(value > 0 for value in explicit_weights(profile, ratings).values()) or any(
+                row["value"] > 0 for row in preferences.history(user_id)
+            )
         if has_personal or has_preferences:
             query, mode = personal, "personal"
             if filters.sort == "relevance":
@@ -40,20 +44,34 @@ class RecommendationsQueries:
 
     def reason_source(self, user_id, work_id):
         genres = set(self.db.scalars(select(WorkGenre.genre_id).where(WorkGenre.work_id == work_id)))
-        tag_map, main_map, genre_map = catalog_maps(
-            self.db.execute(select(WorkTag.work_id, WorkTag.tag_id, WorkTag.is_main)),
-            self.db.execute(select(WorkGenre.work_id, WorkGenre.genre_id)),
-        )
-        profile, ratings = PreferencesQueries(self.db).context(user_id, genre_map)
-        weights = ContentScores(tag_map, main_map, genre_map).contributions(work_id, profile, ratings)
+        if self._reason_context is None or self._reason_context[0] != user_id:
+            preferences = PreferencesQueries(self.db)
+            scorer = preferences.scorer(user_id)
+            profile, ratings = preferences.context(user_id, scorer.genres)
+            self._reason_context = user_id, scorer, profile, ratings
+        _, scorer, profile, ratings = self._reason_context
+        weights = scorer.contributions(work_id, profile, ratings)
         tags = list(
             self.db.scalars(select(Tag).join(WorkTag, WorkTag.tag_id == Tag.id).where(WorkTag.work_id == work_id))
         )
+        tags += list(self.db.scalars(select(Genre).where(Genre.id.in_(genres))))
         positive = [tag for tag in tags if weights.get(tag.id, 0) > 0]
         if not positive:
             return None, None, None
         tag = min(positive, key=lambda t: (-weights[t.id], t.id))
         is_explicit = explicit_weights(profile, ratings).get(tag.id, 0) > 0
+        if not is_explicit:
+            direct = explicit_weights(profile, ratings)
+            sources = [
+                (scorer.source_contributions(row, work_id, direct).get(tag.id, 0), row)
+                for row in scorer.history
+                if row["value"] > 0
+            ]
+            sources = [(value, row) for value, row in sources if value > 0]
+            if sources:
+                _, row = max(sources, key=lambda pair: (pair[0], str(pair[1]["library_id"])))
+                return tag, self.db.get(Library, row["library_id"]), row["source"]
+            return tag, None, None
         results = self.db.execute(
             select(Library, LibraryTag.source)
             .join(LibraryTag, LibraryTag.library_id == Library.id)

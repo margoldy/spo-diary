@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.core.recommendations import ContentScores, catalog_maps
+from app.core.recommendations import catalog_maps
 from app.core.reference import TYPE_IDS
 from app.core.security import create_token
 from app.db.models import Library, LibraryTag, Recommendation, Tag, UserTag, Work, WorkGenre, WorkTag
@@ -58,7 +58,7 @@ class FrontendTests(ApiFixture):
                 db.execute(select(WorkGenre.work_id, WorkGenre.genre_id)),
             )
             profile, ratings = PreferencesQueries(db).context(self.user_id, genre_map)
-            scorer = ContentScores(tag_map, main_map, genre_map)
+            scorer = PreferencesQueries(db).scorer(self.user_id)
             stored = dict(
                 db.execute(
                     select(Recommendation.work_id, Recommendation.score).where(Recommendation.user_id == self.user_id)
@@ -270,12 +270,12 @@ class FrontendTests(ApiFixture):
         tokens = [
             "garbage",
             jwt.encode(
-                {"sub": str(self.user_id), "iat": now, "exp": now - timedelta(seconds=1)}, key, algorithm="HS256"
+                {"sub": str(self.user_id), "type": "access", "iat": now, "exp": now - timedelta(seconds=1)}, key, algorithm="HS256"
             ),
             jwt.encode(
-                {"sub": str(self.user_id), "iat": now, "exp": now + timedelta(hours=1)}, "x" * 40, algorithm="HS256"
+                {"sub": str(self.user_id), "type": "access", "iat": now, "exp": now + timedelta(hours=1)}, "x" * 40, algorithm="HS256"
             ),
-            jwt.encode({"sub": str(uuid4()), "iat": now, "exp": now + timedelta(hours=1)}, key, algorithm="HS256"),
+            jwt.encode({"sub": str(uuid4()), "type": "access", "iat": now, "exp": now + timedelta(hours=1)}, key, algorithm="HS256"),
         ]
         for token in tokens:
             self.client.cookies.set("access_token", token)
@@ -457,9 +457,10 @@ class FrontendTests(ApiFixture):
                 call(client, "DELETE", f"me/private-works/{pid}/cover", 204)
                 call(client, "DELETE", f"me/library/{private['id']}", 204)
                 call(client, "DELETE", f"me/library/{eid}", 204)
+                call(client, "POST", "auth/refresh", 204)
                 call(client, "POST", "auth/logout", 204)
                 call(client, "GET", "me", 401)
-            self.assertEqual(len(routes), 30)
+            self.assertEqual(len(routes), 31)
         finally:
             server.should_exit = True
             thread.join(timeout=10)

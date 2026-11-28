@@ -2,14 +2,15 @@ import hmac
 import math
 import secrets
 from datetime import datetime, timedelta, timezone
-from uuid import uuid4
+from uuid import UUID, uuid4
 
+import jwt
 from sqlalchemy.orm import Session
 
 from app.core.errors import ApiError
 from app.core.limits import limiter
 from app.core.mail import send_code
-from app.core.security import code_hash
+from app.core.security import code_hash, read_token
 from app.db.models import Code, User
 from app.db.queries.auth import AuthQueries
 
@@ -18,6 +19,17 @@ class AuthService:
     def __init__(self, db: Session):
         self.db = db
         self.queries = AuthQueries(db)
+
+    def refresh(self, token):
+        try:
+            claims = read_token(token, "refresh")
+            user_id = UUID(claims["sub"])
+        except (jwt.InvalidTokenError, ValueError, KeyError, TypeError):
+            raise ApiError(401, "UNAUTHORIZED", "Нужен вход")
+        user = self.db.get(User, user_id)
+        if user is None:
+            raise ApiError(401, "UNAUTHORIZED", "Нужен вход")
+        return user
 
     def request_code(self, email: str, ip: str):
         limiter.check((("send-ip", ip), 20, 3600))

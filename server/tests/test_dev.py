@@ -92,7 +92,7 @@ class DevTests(unittest.TestCase):
                                 )
                         now = datetime.now(timezone.utc)
                         token = jwt.encode(
-                            {"sub": str(user_id), "iat": now, "exp": now + timedelta(minutes=5)},
+                            {"sub": str(user_id), "type": "access", "iat": now, "exp": now + timedelta(minutes=5)},
                             secret,
                             algorithm="HS256",
                         )

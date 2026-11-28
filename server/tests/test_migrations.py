@@ -62,7 +62,7 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual((positive, negative), (1, 0))
             self.assertAlmostEqual(float(weight), 1 / 3)
             score = db.execute("SELECT score FROM recommendations WHERE work_id=%s", (target,)).fetchone()[0]
-            self.assertAlmostEqual(float(score), 1 / 3)
+            self.assertAlmostEqual(float(score), (1 / 3) * (1 + .25 * .15 / .45))
 
 
 if __name__ == "__main__":

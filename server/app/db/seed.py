@@ -83,7 +83,8 @@ def import_catalog(db, path):
         if not main_ids.issubset(tag_ids) or (tag_ids and not main_ids):
             raise ValueError("Основные признаки должны быть непустой частью тегов произведения")
         old_tags = dict(db.execute(select(WorkTag.tag_id, WorkTag.is_main).where(WorkTag.work_id == work_id)).all())
-        if db.get(Work, work_id) is None or old_tags != {tag: tag in main_ids for tag in tag_ids}:
+        work = db.get(Work, work_id)
+        if work is None or work.type_id != TYPE_IDS[row["type"]] or old_tags != {tag: tag in main_ids for tag in tag_ids}:
             changed.add(work_id)
         genre_ids = set()
         for name in row.get("genres", []):
@@ -121,6 +122,7 @@ def import_catalog(db, path):
             db.execute(delete(WorkTag).where(WorkTag.work_id == work_id))
             db.add_all([WorkTag(work_id=work_id, tag_id=value, is_main=value in main_ids) for value in tag_ids])
     db.flush()
+    db.expire_all()
     preferences = PreferencesQueries(db)
     library = LibraryService(db)
     for user_id in db.scalars(select(User.id).order_by(User.id)):

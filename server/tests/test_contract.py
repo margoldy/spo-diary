@@ -19,7 +19,7 @@ class ContractTests(unittest.TestCase):
             for method in operations
         }
         self.assertEqual(actual, documented)
-        self.assertEqual(len(actual), 30)
+        self.assertEqual(len(actual), 31)
 
     def test_complete_response_examples_match_schemas(self):
         models = {}

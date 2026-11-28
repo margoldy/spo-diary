@@ -1,0 +1,7 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="Фронтенд + бэкенд" type="CompoundRunConfigurationType">
+    <toRun name="Фронтенд" type="js.build_tools.npm" />
+    <toRun name="Бэкенд без Docker" type="PythonConfigurationType" />
+    <method v="2" />
+  </configuration>
+</component>
